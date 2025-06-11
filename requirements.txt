@@ -1,0 +1,7 @@
+gradio
+fastapi
+uvicorn
+mangum
+langchain-community
+plotly
+pandas
