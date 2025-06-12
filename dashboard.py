@@ -5,16 +5,34 @@ import plotly.graph_objects as go
 import os
 from langchain_community.graphs import Neo4jGraph
 import logging
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
+
+
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+app = FastAPI()
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+@app.get("/healthz")
+async def health_check():
+    return {"status": "healthy"}
 
 def fetch_client_data():
     """Fetch client data with error handling"""
     try:
         NEO4J_URI = os.getenv("NEO4J_URI", "neo4j+s://3af8a684.databases.neo4j.io")
         NEO4J_USER = os.getenv("NEO4J_USER", "neo4j")
-        NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "Tat-pgntlgkxbtIyxdNf5W1P0qorkDBm3YwhRrY4k")
+        NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "Tat-pgntlgkxbtIyxdNf5W1P0qorkDBm3YwhRWzrY4k")
         
         kg = Neo4jGraph(
             url=NEO4J_URI, 
@@ -24,13 +42,13 @@ def fetch_client_data():
         )
         
         cypher = """
-        MATCH (c:Customer)-[:EARNS]->(i:Income),
-            (c)-[:HAS_CREDIT_REPORT]->(cr:CreditReport),
-            (c)-[:HAS_EXPENSE]->(exp:Expense),
-            (c)-[:HAS_GOAL]->(s:SavingsGoal),
-            (c)-[:OWES_DEBT]->(d:Debt)
-        RETURN c.name as name, c.age as age, i.amount_monthly as income, exp.amount_monthly as monthly_expenses, 
-        cr.score as credit_score, s.current_saved as savings, d.remaining_balance as debt, i.employer_business_name as employment
+        MATCH (c:Customer)-[:HAS_INCOME]->(i:Income),
+            (c)-[:HAS_CREDIT_REPORT]->(cr:CreditReport)
+            ,(c)-[:HAS_EXPENSES]->(exp:Expense)
+            ,(c)-[:HAS_GOAL]->(s:SavingsGoal)
+            ,(c)-[:OWES_DEBT]->(d:Debt)
+        RETURN c.name as name, c.age as age, i.amount as income, exp.amount as monthly_expenses, 
+        cr.score as credit_score, s.current_saved as savings, d.remaining_balance as debt, c.occupation as occupation
         """
         
         results = kg.query(cypher)
@@ -42,7 +60,7 @@ def fetch_client_data():
                 "monthly_expenses": record["monthly_expenses"],
                 "savings": record["savings"],
                 "credit_score": record["credit_score"],
-                "employment": record["employment"],
+                "occupation": record["occupation"],
                 "age": record["age"],
                 "debt": record["debt"],
             }
@@ -58,7 +76,7 @@ def fetch_client_data():
                 "monthly_expenses": 4500,
                 "savings": 25000,
                 "credit_score": 750,
-                "employment": "Tech Corp",
+                "occupation": "Tech Corp",
                 "age": 32,
                 "debt": 15000,
             },
@@ -67,7 +85,7 @@ def fetch_client_data():
                 "monthly_expenses": 3800,
                 "savings": 18000,
                 "credit_score": 720,
-                "employment": "Finance Ltd",
+                "occupation": "Finance Ltd",
                 "age": 28,
                 "debt": 12000,
             },
@@ -76,7 +94,7 @@ def fetch_client_data():
                 "monthly_expenses": 5200,
                 "savings": 45000,
                 "credit_score": 780,
-                "employment": "Healthcare Inc",
+                "occupation": "Healthcare Inc",
                 "age": 35,
                 "debt": 8000,
             }
@@ -116,7 +134,7 @@ def get_metrics_and_analysis(client_data, analysis_type, query, client_name):
 
 **Recommendation:** Approve personal loan up to Rs. {max_loan:,.0f} at standard interest rate. Their debt-to-income ratio would remain within acceptable limits.
 
-**Risk Factors:** Monitor employment stability and ensure loan terms include flexible payment options."""
+**Risk Factors:** Monitor occupation stability and ensure loan terms include flexible payment options."""
         }
     
     elif analysis_type == "investment_analysis":
@@ -225,7 +243,7 @@ def get_client_summary(client_name):
             <span>Credit Score:</span> <strong>{client_data['credit_score']}</strong>
         </div>
         <div style="display: flex; justify-content: space-between; margin-bottom: 0.5rem;">
-            <span>Employment:</span> <strong>{client_data['employment']}</strong>
+            <span>Employment:</span> <strong>{client_data['occupation']}</strong>
         </div>
     </div>
     """
@@ -426,9 +444,10 @@ with gr.Blocks(css=custom_css, title="RM Intelligence Dashboard", theme=gr.theme
     )
 
 if __name__ == "__main__":
+    server_port = int(os.environ.get("AWS_LAMBDA_HTTP_PORT", 8080))
     demo.launch(
         server_name="0.0.0.0", 
-        server_port=7860, 
+        server_port=server_port, 
         share=False,
         show_error=True
     )
