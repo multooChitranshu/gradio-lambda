@@ -1,0 +1,13 @@
+{
+    "analysis_results": {
+        "risk_score":"",
+        "recommeded_limit":"",
+        "analysis_title":"",
+        "recommendation":"",
+        "savings_factors":""
+    },
+    "evidence_reasoning": {
+        "knowledge_graph_reasoning": [],
+        "vectordb_supporting_docs":[]
+    }
+}

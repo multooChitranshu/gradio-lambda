@@ -1,0 +1,13 @@
+{
+    "analysis_results": {
+        "debt-to-income-ratio":"",
+        "financial-health":"",
+        "analysis_title":"",
+        "recommendation":"",
+        "risk_factors":""
+    },
+    "evidence_reasoning": {
+        "knowledge_graph_reasoning": [],
+        "vectordb_supporting_docs":[]
+    }
+}
