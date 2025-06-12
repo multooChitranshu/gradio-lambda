@@ -1,0 +1,32 @@
+{
+    "analyses": [
+      {
+        "type": "RISK",
+        "results": {
+            "risk_score": 0,
+            "recommended_limit": 0,
+            "analysis_title": "",
+            "recommendation": "",
+            "savings_factors": []
+        },
+        "evidence": {
+            "knowledge_graph_reasoning": [],
+            "supporting_documents": []
+        }
+      },
+      {
+        "type": "SAVINGS", 
+        "results": {
+            "debt-to-income-ratio":"",
+            "financial-health":"",
+            "analysis_title": "",
+            "recommendation": "",
+            "savings_factors": []
+        },
+        "evidence": {
+            "knowledge_graph_reasoning": [],
+            "supporting_documents": []
+        }
+      }
+    ]
+  }
