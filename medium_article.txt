@@ -1,0 +1,111 @@
+Deploying a Gradio application is breezy with AWS. I explored two different Services: App Runner and Lambda. A couple of gotchas and some Gradio quirks led to this blog post but either service — AWS App Runner or Lambda — can be production solutions.
+The Nova Family of Models that dropped at re:Invent were exciting. Their demo interfaces like partyrock, not so much. I created a Gradio Demo showcasing all of Nova Canvas’s features on HuggingFace Spaces — a simple, community-backed service that makes application demos straightforward. Eventually, issues arose when local builds ran but Spaces builds failed, even with frozen dependencies, time spent fiddling felt like throwing good money after bad. I needed a more robust solution.
+AWS App Runner:
+App Runner is a managed service for web applications and containers that’s easy to scale and set up, requiring only a repository or source container registry. Most of the configuration can be handled in the apprunner.yaml file that you include in the root directory of your repo:
+version: 1.0
+runtime: python312
+run:
+  # Install dependencies in pre-run for Python 3.12 revised build
+  pre-run:
+    - echo "Installing dependencies using pip3 in pre-run..."
+    - pip3 install --upgrade pip
+    - pip3 install -r requirements.txt
+  command: python3 app.py # Use python3 for Python 3.12
+  network:
+    port: 7860
+    env: APP_PORT
+  # Environment variables available during the run phase
+  env:
+    - name: GRADIO_SERVER_NAME
+      value: "0.0.0.0"
+    - name: GRADIO_SERVER_PORT
+      value: "7860"
+    - name: RATE_LIMIT
+      value: "20"
+    - name: NOVA_IMAGE_BUCKET
+      value: "nova-image-data"
+    - name: BUCKET_REGION
+      value: "us-west-2"
+  secrets:
+    - name: AMP_AWS_ID
+      value-from: "arn:aws:secretsmanager:us-west-2:<rest-of-secret-arn>"
+
+
+Nothing with Gradio changes; using a custom configuration allows us to specify Python 3.12 or other changes not available through the AppRunner Console. For service settings, you’re billed $0.0064 for each vCPU and $0.007 for each GB of virtual memory. You can scale down to 0.25 vCPU and 0.5 GB of memory, resulting in a deployment cost of $0.12 per day for an always-on service that auto scales. The Costco hot dog would be proud.
+Customize scaling factors and WAF settings based on need, both come with added costs. Something to remember: grant the Instance Security Role permissions to communicate with other services. In my case, I needed to add permissions for Bedrock, Secrets Manager, and S3, configuring each service to accept calls from the container’s Security Role
+
+
+AWS Lambda with Containers:
+While App Runner’s always-on service is reasonable, a Lambda solution would be ideal for cost optimization. Lambda has a 250 MB size limit for combined Layers and Deployment packages. Aggressively trimming Gradio packages to fit a .zip deployment would have been possible, but I’m not a masochist. Instead, I created a container image using CodeBuild and ECR with the aws-lambda-adapter making it play nice together.
+You need a Dockerfile and buildspec.yaml located in your repo. For the Dockerfile:
+# Use an official Python runtime as a parent image
+FROM public.ecr.aws/docker/library/python:3.12-slim
+
+WORKDIR /app
+
+COPY requirements.txt .
+
+RUN pip install --no-cache-dir --upgrade pip
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY . .
+
+COPY --from=public.ecr.aws/awsguru/aws-lambda-adapter:0.9.0 /lambda-adapter /opt/extensions/lambda-adapter
+
+CMD ["python3", "app.py"]
+
+For the buildspec.yaml:
+version: 0.2
+
+env:
+  variables:
+    AWS_REGION: "us-west-2"
+    AWS_ACCOUNT_ID: <account-id>
+    IMAGE_REPO_NAME: "production/canvas-demo"
+    IMAGE_TAG: "latest"
+
+phases:
+  install:
+    runtime-versions:
+      python: 3.12
+    commands:
+      - echo "Install phase - checking required tools"
+      - aws --version
+      - docker --version
+
+  pre_build:
+    commands:
+      - echo Logging in to Amazon ECR...
+      - aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com
+
+  build:
+    commands:
+      - echo Build started on `date`
+      - IMAGE_URI=$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$IMAGE_REPO_NAME:$IMAGE_TAG
+      - echo "Building Docker image..."
+      - docker build -t $IMAGE_URI .
+
+  post_build:
+    commands:
+      - echo Build completed on `date`
+      - echo Pushing the Docker image to ECR...
+      - docker push $IMAGE_URI
+      - echo Push finished. Image URI is $IMAGE_URI
+
+Before running the build, you’ll need to create a repository in ECR to store the container image. One thing to change before building is the gradio launch function. It should include 0.0.0.0 and server-port=8080 to ensure it’s listening on all ports and is exposing the correct port for the lambda adapter. Something like this in your app.py:
+server_port = int(os.environ.get("AWS_LAMBDA_HTTP_PORT", 8080))
+demo.launch(server_name="0.0.0.0", server_port=server_port)
+In CodeBuild, I created a new project using an S3 bucket as the source, selecting an on-demand, managed image for the build environment. Lambda compute containers are optimized for integration layers and don’t include Docker, go with EC2 compute. An Amazon Linux image using standard settings.
+Deploying with Lambda:
+In Lambda, I created a new function using the container image approach. A name, the ECR image and Function URL are all you need to get the Gradio app up and running. API Gateway can be added for high-traffic apps. Since everything had been configured in the CodeBuild deployment, no overrides were necessary. Ensure the Lambda service role has permissions and add your env/secrets in the Lambda Config.
+To create an always-on version, you can set up an EventBridge trigger to call Lambda at regular intervals (less than the function timeout). AWS recommends running container images with 2048 or 4096 MB of memory, which would cost approximately $5.76 per day for an always-on 4096 MB application, or $0.71 for a 512 MB application. We can do better.
+A cold start increases startup by a few seconds. Running a 4096 MB application at the maximum 15-minute timeout would cost around $0.06 per instance. Still not good enough.
+Gradio typically consumes between 125–300 MB of memory. Setting the Lambda Function to 512 should work well and give us a buffer. Once loaded, the Gradio app runs on a svelte frontend package, allowing for shorter function timeouts of about 1 minute. Once the frontend package is loaded successive calls become only about grabbing container role creds to interact with other services.
+Optimize:
+I used the Lambda console to manage all secrets and environment variables. Since my application delivers media content, I added a CloudFront distribution with S3 storage as the origin, significantly reducing traffic costs based on user geographic location.
+The Lambda Adapter is extremely efficient, though one byproduct can be possible race conditions, the app not being recognized before the Adapter timeouts. The Adapter defaults to check ‘/’, the root directory. This can be changed by adding AWS_LWA_READINESS_CHECK_PATH in the Lambda env variables. Gradio/FastApi provides an alternative at ‘/healthz’ for application startups.
+CloudWatch doesn’t handle base64-encoded strings or any long string well, leading to crashes from log output.
+- App Runner: Great for simplicity and managed scaling
+- Lambda with Containers: Excellent for cost optimization and serverless benefits
+
+Either can work for the other, and both are extremely user-friendly.
