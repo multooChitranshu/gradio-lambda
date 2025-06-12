@@ -1,1 +1,16 @@
-I am sharing a file that is currently deployed on aws by uploading a zip file to s3, creating an image using ECR, and create the lambda via that. Now, I want you to change it such that on client change the Client Summary section of the page updates and the custom query sets to blank. And the analysis results and evidence and reasoning column are set to blank(like Metric1 etc). Only when the Analyze client button is clicked then the RAG should be triggered and page should show data. Where all do I need to make changes for this, assume missing imports/functions exists?
+Since there is no user profile information provided, I cannot generate a detailed analysis or recommendation. However, I can provide a general response in the requested JSON format:
+
+{
+    "type": "SAVINGS",
+    "results": {
+        "debt_to_income_ratio": "",
+        "financial_health": "",
+        "analysis_title": "General Savings Advice",
+        "recommendation": "Without specific user details, a general recommendation is to diversify investments, utilize tax-advantaged accounts, regularly review financial plans, and consider dollar-cost averaging into equity markets to smooth short-term market fluctuations.",
+        "savings_factors": ["Diversification across asset classes", "Tax-advantaged accounts", "Regular financial plan review", "Dollar-cost averaging investment strategy"]
+    },
+    "evidence": {
+        "knowledge_graph_reasoning": [],
+        "supporting_documents": []
+    }
+}
