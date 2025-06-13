@@ -71,11 +71,13 @@ NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "Tat-pgntlgkxbtIyxdNf5W1P0qorkDBm3Y
 
 pc_client = None
 bedrock_runtime_client = None
-rag_chain = None
+savings_rag_chain = None
+risk_rag_chain=None
 embeddings_instance = None
 vectorstore_instance = None
 llm_instance = None
 neo4j_driver = None
+classification_chain = None
 
 def fetch_client_data():
     """Fetch client data with error handling using new Cypher query"""
@@ -186,12 +188,64 @@ def fetch_client_data():
 
 CLIENT_DATA, error = fetch_client_data()
 
-def initialize_rag_components():
+def initialize_classifier():
+    """Initialize the classification components."""
+    global bedrock_runtime_client, classification_chain, llm_instance
+    
+    print("Initializing query classifier...")
+    
+    # Initialize AWS Bedrock Runtime Client
+    if bedrock_runtime_client is None:
+        bedrock_runtime_client = boto3.client(
+            service_name='bedrock-runtime',
+            region_name=AWS_REGION_1
+        )
+        print("✓ AWS Bedrock client initialized")
+    
+    # Initialize LLM
+    if llm_instance is None:
+        claude_model_kwargs = {
+            "anthropic_version": "bedrock-2023-05-31",
+            "max_tokens": 50,
+            "temperature": 0.1,
+            "top_p": 0.9
+        }
+        llm_instance = ChatBedrock(
+            model_id=GENERATION_MODEL_ID,
+            client=bedrock_runtime_client,
+            model_kwargs=claude_model_kwargs
+        )
+        print("✓ LLM initialized")
+    
+    # Build classification chain
+    if classification_chain is None:
+        prompt_template = ChatPromptTemplate.from_messages([
+            (
+                "system",
+                """You are a query classifier for financial services. 
+                Classify the user query into exactly one category:
+                - "risk" for queries about: credit risk, loan eligibility, risk assessment, default probability, creditworthiness, loan approval
+                - "savings" for queries about: savings analysis, debt-to-income ratio, financial health, savings recommendations, budgeting, spending analysis
+                
+                Respond with only one word: "risk" or "savings" (lowercase, no quotes).
+                """
+            ),
+            ("user", "Classify this query: {query}")
+        ])
+        
+        classification_chain = (
+            prompt_template
+            | llm_instance
+            | StrOutputParser()
+        )
+        print("✓ Classification chain initialized")
+
+def initialize_savings_rag_components():
     """
     Initializes all necessary RAG clients and LangChain components.
     This function should be called only once per Lambda container lifecycle.
     """
-    global pc_client, bedrock_runtime_client, rag_chain, embeddings_instance, vectorstore_instance, llm_instance, neo4j_driver
+    global pc_client, bedrock_runtime_client, savings_rag_chain, embeddings_instance, vectorstore_instance, llm_instance, neo4j_driver
 
     # --- Initialize Pinecone Client ---
     if pc_client is None:
@@ -279,7 +333,7 @@ def initialize_rag_components():
         )
 
     # --- Build the RAG chain ---
-    if rag_chain is None:
+    if savings_rag_chain is None:
         retriever = vectorstore_instance.as_retriever(search_kwargs={"k": 3})
         print("Retriever initialized with top-k search set to 3.")
 
@@ -290,9 +344,9 @@ def initialize_rag_components():
             [
                 (
                     "system",
-                    """You are a helpful savings analyst for JPMorgan Chase.
+                    """You are a helpful SAVINGS analyst for JPMorgan Chase who analyzes client's profile from financial lens.
                     Based on the following context and the detailed user profile information (if provided),
-                    please answer the question accurately and concisely.
+                    please answer the question accurately and concisely. Analyze the savings aspect of the question.
 
                     Your response should be formatted as JSON with the following structure:
                     {{
@@ -309,11 +363,10 @@ def initialize_rag_components():
                             "supporting_documents": ["List supporting top 3 documents"]
                         }}
                     }}
-
+                    No matter, what your response should only be in the above json format, no additional text. If the answer is not available in the provided information, return an empty json.
                     Pay close attention to any user-specific identifiers (like user ID) and any 'Unstructured Data'
                     notes in the user profile, as these often contain critical insights.
 
-                    If the answer is not available in the provided information, state that you cannot answer.
                     Summarize her profile information and any relevant context to provide a comprehensive answer.
                     Do not make up information. Focus on providing relevant details from the context and user profile.
             
@@ -325,7 +378,7 @@ def initialize_rag_components():
             ]
         )
         print("Prompt template initialized.")
-        rag_chain = (
+        savings_rag_chain = (
             RunnablePassthrough.assign(
                 context=lambda x: retriever.invoke(x["question"])
             )
@@ -338,22 +391,204 @@ def initialize_rag_components():
         )
         print("RAG chain initialized.")
 
-def analyze_query(query_text):
-    """Simple function to determine analysis type based on query keywords"""
-    query_lower = query_text.lower()
+
+def initialize_risk_rag_components():
+    """
+    Initializes all necessary RAG clients and LangChain components.
+    This function should be called only once per Lambda container lifecycle.
+    """
+    global pc_client, bedrock_runtime_client, risk_rag_chain, embeddings_instance, vectorstore_instance, llm_instance, neo4j_driver
+
+    # --- Initialize Pinecone Client ---
+    if pc_client is None:
+        if not PINECONE_API_KEY or not PINECONE_ENVIRONMENT:
+            raise ValueError("PINECONE_API_KEY or PINECONE_ENVIRONMENT not set as Lambda environment variables.")
+        try:
+            pc_client = Pinecone(api_key=PINECONE_API_KEY, environment=PINECONE_ENVIRONMENT)
+            print("Successfully initialized Pinecone client.")
+        except Exception as e:
+            print(f"Error initializing Pinecone: {e}")
+            raise
+
+    # --- Initialize AWS Bedrock Runtime Client ---
+    if bedrock_runtime_client is None:
+        if not AWS_REGION_1:
+            raise ValueError("AWS_REGION_1 not set as a Lambda environment variable.")
+        try:
+            bedrock_runtime_client = boto3.client(
+                service_name='bedrock-runtime',
+                region_name=AWS_REGION_1
+            )
+            print(f"Successfully initialized AWS Bedrock client in region {AWS_REGION_1}.")
+        except Exception as e:
+            print(f"Error initializing AWS Bedrock client: {e}")
+            raise
+
+    # --- Initialize LangChain Embeddings ---
+    if embeddings_instance is None:
+        print(f"Initializing embedding model {EMBEDDING_MODEL_ID} for LangChain...")
+        embeddings_instance = BedrockEmbeddings(
+            model_id=EMBEDDING_MODEL_ID,
+            client=bedrock_runtime_client
+        )
+
+    # --- Initialize LangChain Pinecone Vectorstore ---
+    if vectorstore_instance is None:
+        if not INDEX_NAME:
+            raise ValueError("INDEX_NAME not set as a Lambda environment variable.")
+        print(f"Initializing LangChain Pinecone Vectorstore using index '{INDEX_NAME}'...")
+        try:
+            vectorstore_instance = LangchainPineconeVectorstore.from_existing_index(
+                index_name=INDEX_NAME,
+                embedding=embeddings_instance,
+                text_key="original_content"
+            )
+            print("LangChain Pinecone vector store initialized from existing index.")
+        except Exception as e:
+            print(f"Error initializing LangChain Pinecone Vectorstore: {e}")
+            raise
+
+    # --- Initialize Neo4j Driver ---
+    if neo4j_driver is None:
+        if not NEO4J_URI or not NEO4J_USERNAME or not NEO4J_PASSWORD:
+            print("Neo4j credentials not fully set. Skipping Neo4j driver initialization.")
+        else:
+            try:
+                neo4j_driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USERNAME, NEO4J_PASSWORD))
+                neo4j_driver.verify_connectivity()
+                print("Successfully initialized Neo4j driver.")
+            except ServiceUnavailable as e:
+                print(f"Neo4j Service Unavailable: {e}. Check Neo4j instance or URI.")
+                neo4j_driver = None
+            except Exception as e:
+                print(f"Error initializing Neo4j driver: {e}")
+                neo4j_driver = None
+
+    # --- Initialize LLM for generation ---
+    if llm_instance is None:
+        if not GENERATION_MODEL_ID:
+            raise ValueError("GENERATION_MODEL_ID not set as an environment variable.")
+
+        print(f"Initializing generation model {GENERATION_MODEL_ID} for LangChain...")
+        claude_model_kwargs = {
+            "anthropic_version": "bedrock-2023-05-31",
+            "max_tokens": 500,
+            "top_k": 250,
+            "stop_sequences": [],
+            "temperature": 1,
+            "top_p": 0.999
+        }
+        llm_instance = ChatBedrock(
+            model_id=GENERATION_MODEL_ID,
+            client=bedrock_runtime_client,
+            model_kwargs=claude_model_kwargs
+        )
+
+    # --- Build the RAG chain ---
+    if risk_rag_chain is None:
+        retriever = vectorstore_instance.as_retriever(search_kwargs={"k": 3})
+        print("Retriever initialized with top-k search set to 3.")
+
+        def format_docs(docs: list[Document]) -> str:
+            return "\n\n".join(doc.page_content for doc in docs)
+
+        prompt_template = ChatPromptTemplate.from_messages(
+            [
+                (
+                    "system",
+                    """You are a helpful RISK analyst for JPMorgan Chase who analyzes client's profile from financial lens.
+                    Based on the following context and the detailed user profile information (if provided),
+                    please answer the question accurately and concisely. Analyze the risk aspect of the question.
+
+                    Your response should be formatted as JSON with the following structure:
+                    {{
+                        "type": "RISK",
+                        "results": {{
+                            "risk_score": "Provide the risk score on the scale of 1 to 10. It should tell how risky is the query for the client.",
+                            "recommended_limit": "Assess the financial situation and suggest a recommended limit in Interger for the asked question. It can be loan or credit card limit",
+                            "analysis_title": "Provide a title for the analysis.",
+                            "recommendation": "Offer a recommendation based on the analysis.",
+                            "risk_factors": "List key factors affecting savings."
+                        }},
+                        "evidence": {{
+                            "knowledge_graph_reasoning": ["Provide top 3 reasoning based on the knowledge graph"],
+                            "supporting_documents": ["List supporting top 3 documents"]
+                        }}
+                    }}
+                    No matter, what your response should only be in the above json format, no additional text. If the answer is not available in the provided information, return an empty json.
+                    Pay close attention to any user-specific identifiers (like user ID) and any 'Unstructured Data'
+                    notes in the user profile, as these often contain critical insights.
+
+                    Summarize her profile information and any relevant context to provide a comprehensive answer.
+                    Do not make up information. Focus on providing relevant details from the context and user profile.
+            
+                    User Profile from Knowledge Graph:
+                    {user_profile_info}
+                    """
+                ),
+                ("user", "Context:\n{context}\n\nQuestion: {question}\n\nAnswer:"),
+            ]
+        )
+        print("Prompt template initialized.")
+        risk_rag_chain = (
+            RunnablePassthrough.assign(
+                context=lambda x: retriever.invoke(x["question"])
+            )
+            | RunnablePassthrough.assign(
+                context=lambda x: format_docs(x["context"])
+            )
+            | prompt_template
+            | llm_instance
+            | StrOutputParser()
+        )
+        print("RAG chain initialized.")
+
+def clean_query_text(query: str) -> str:
+    """Extract the actual query from user input, removing user identifiers."""
+    # Remove user name and ID pattern: "Name(ID): query"
+    match = re.match(r'^\s*([A-Za-z\s]+)\s*\([PC]\d{3,}\)\s*:\s*(.*)', query, re.IGNORECASE)
+    if match:
+        return match.group(2).strip()
     
-    if any(word in query_lower for word in ['loan', 'borrow', 'credit']):
-        return "loan_analysis"
-    elif any(word in query_lower for word in ['investment', 'invest', 'portfolio']):
-        return "investment_analysis"
-    elif any(word in query_lower for word in ['mortgage', 'home', 'house']):
-        return "mortgage_analysis"
-    elif any(word in query_lower for word in ['card', 'credit card']):
-        return "card_analysis"
-    elif any(word in query_lower for word in ['saving', 'goal', 'target']):
-        return "savings_analysis"
-    else:
-        return "general_analysis"
+    # Remove standalone ID pattern
+    cleaned = re.sub(r'\b[PC]\d{3,}\b', '', query, flags=re.IGNORECASE)
+    return cleaned.strip()
+
+def classify_query(query: str) -> str:
+    """Classify the query as 'risk' or 'savings'."""
+    try:
+        # Clean the query to focus on the actual question
+        cleaned_query = clean_query_text(query)
+        
+        print(f"Original query: {query}")
+        print(f"Cleaned query: {cleaned_query}")
+        
+        # Get classification
+        result = classification_chain.invoke({"query": cleaned_query})
+        
+        # Clean and validate result
+        classification = result.strip().lower()
+        
+        # Ensure we return only valid classifications
+        if classification in ['risk', 'savings']:
+            return classification
+        else:
+            # Fallback logic based on keywords
+            risk_keywords = ['loan', 'credit', 'risk', 'eligibility', 'approval', 'qualify', 'default']
+            savings_keywords = ['savings', 'debt-to-income', 'financial health', 'budget', 'spending']
+            
+            query_lower = cleaned_query.lower()
+            
+            risk_score = sum(1 for keyword in risk_keywords if keyword in query_lower)
+            savings_score = sum(1 for keyword in savings_keywords if keyword in query_lower)
+            
+            return 'risk' if risk_score > savings_score else 'savings'
+            
+    except Exception as e:
+        print(f"Error in classification: {e}")
+        # Default fallback to savings
+        return 'savings'
+    
 
 def get_fallback_analysis(client_data, analysis_type, query, client_name):
     """Enhanced fallback analysis when RAG Lambda is unavailable"""
@@ -518,7 +753,6 @@ def query_neo4j_profile(user_id: str = None, user_name: str = None) -> str:
         with neo4j_driver.session() as session:
             result = session.run(query)
             records = list(result)
-            print("Records:>>>>>>",result)
 
             if not records:
                 return f"No profile found in Knowledge Graph for identifier: {user_id if user_id else user_name}."
@@ -611,13 +845,34 @@ def extract_user_info_and_clean_query(full_query: str) -> tuple[str, str, str]:
 
     return None, None, full_query
 
-def call_integrated_rag(client_name, client_id, query):
+def extract_json_from_response(response_text):
+    # Matches the first { ... } block (non-recursive, so only works with top-level JSONs)
+    matches = re.findall(r'\{.*\}', response_text, re.DOTALL)
+
+    for match in matches:
+        try:
+            return json.loads(match)
+        except json.JSONDecodeError:
+            return {}
+
+    return {}
+
+    
+
+def call_integrated_rag(client_name, client_id, query, analysis_type):
     """
     Integrated RAG function that replaces the external Lambda call
     """
     try:
+        rag_chain=None
         # Initialize RAG components if not already done
-        initialize_rag_components()
+        if(analysis_type=="savings"):
+            initialize_savings_rag_components()
+            rag_chain=savings_rag_chain
+        else:
+            initialize_risk_rag_components()
+            rag_chain=risk_rag_chain
+
         
         # Format the query like the original Lambda expected
         formatted_query = f"{client_name}({client_id}) : {query}"
@@ -649,25 +904,12 @@ def call_integrated_rag(client_name, client_id, query):
 
         final_response = rag_chain.invoke(chain_input)
         print(f"\nRAG Response:\n{final_response}")
-        
-        # Parse the JSON response from the RAG
-        try:
-            rag_json = json.loads(final_response)
-            return {
-                'success': True,
-                'analysis': rag_json
-            }
-        except json.JSONDecodeError:
-            # If response is not JSON, wrap it
-            return {
-                'success': True,
-                'analysis': {
-                    'results': {
-                        'analysis_title': 'RAG Analysis',
-                        'recommendation': final_response
-                    }
-                }
-            }
+        parsed_json = extract_json_from_response(final_response)
+        # if parsed_json:
+        return {
+            'success':True,
+            'analysis':parsed_json
+        }
             
     except Exception as e:
         logger.error(f"Error in integrated RAG: {e}")
@@ -676,79 +918,7 @@ def call_integrated_rag(client_name, client_id, query):
             'error': str(e)
         }
 
-# Modified get_metrics_and_analysis function to use integrated RAG
-def get_metrics_and_analysis(client_data, analysis_type, query, client_name):
-    """Returns appropriate metrics and analysis based on query type - now with integrated RAG"""
-    
-    # Get client ID for RAG call
-    client_id = client_data.get("id", "UNKNOWN")
-    
-    # Call integrated RAG instead of external Lambda
-    rag_response = call_integrated_rag(client_name, client_id, query)
-    
-    if rag_response and rag_response.get('success', False):
-        # Use RAG response
-        logger.info("Using integrated RAG response for analysis")
-        
-        # Extract data from RAG response
-        analysis_data = rag_response.get('analysis', {})
-        results_data = analysis_data.get('results', {})
-        
-        # Map RAG response to UI format
-        return {
-            "metric1_label": "Debt-to-Income Ratio",
-            "metric1_value": results_data.get('debt_to_income_ratio', 'N/A'),
-            "metric2_label": "Financial Health",  
-            "metric2_value": results_data.get('financial_health', 'N/A'),
-            "analysis_title": results_data.get('analysis_title', f'RAG Analysis for {client_name}'),
-            "analysis_text": results_data.get('recommendation', 'Analysis from RAG system.')
-        }
-    
-    else:
-        # Fallback to local analysis (keep same as existing code)
-        logger.warning("RAG system unavailable, using fallback analysis")
-        return get_fallback_analysis(client_data, analysis_type, query, client_name)
-
-# Modified get_evidence_data function to use RAG evidence
-def get_evidence_data(client_name, analysis_type):
-    """Generate evidence data from RAG response"""
-    
-    if not client_name or client_name not in CLIENT_DATA:
-        return [], []
-    
-    client_data = CLIENT_DATA[client_name]
-    client_id = client_data.get("id", "UNKNOWN")
-    
-    # Try to get evidence from integrated RAG
-    try:
-        rag_response = call_integrated_rag(client_name, client_id, "Provide evidence and reasoning for analysis")
-        
-        if rag_response.get('success') and 'analysis' in rag_response:
-            evidence_data = rag_response['analysis'].get('evidence', {})
-            
-            # Format KG insights
-            kg_insights = evidence_data.get('knowledge_graph_reasoning', [])
-            if isinstance(kg_insights, list):
-                kg_insights = kg_insights
-            else:
-                kg_insights = [str(kg_insights)]
-            
-            # Format vector docs
-            vector_docs_raw = evidence_data.get('supporting_documents', [])
-            vector_docs = []
-            if isinstance(vector_docs_raw, list):
-                for i, doc in enumerate(vector_docs_raw):
-                    vector_docs.append({
-                        "source": f"RAG Document {i+1}",
-                        "text": str(doc)
-                    })
-            
-            return kg_insights, vector_docs
-    
-    except Exception as e:
-        logger.warning(f"Could not get evidence from integrated RAG: {e}")
-    
-    # Enhanced fallback evidence data (keep same as existing code)
+def get_fallback_evidence(client_name, client_data):
     kg_insights = [
         f"Employment stability: {client_name} works in {client_data['occupation']} sector showing consistent growth",
         f"Geographic factor: Based in {client_data['city']} with regional economic stability", 
@@ -767,7 +937,6 @@ def get_evidence_data(client_name, analysis_type):
     
     return kg_insights, vector_docs
 
-# Initialize RAG components on application startup
 try:
     initialize_rag_components()
     logger.info("RAG components initialized successfully")
@@ -853,13 +1022,57 @@ def analyze_client(client_name, query):
         )
     
     client_data = CLIENT_DATA[client_name]
+    client_id = client_data.get("id", "UNKNOWN")
     
     # Get client summary
     summary = get_client_summary(client_name)
     
     # Analyze query and get results (now with RAG Lambda integration)
-    analysis_type = analyze_query(query)
-    results = get_metrics_and_analysis(client_data, analysis_type, query, client_name)
+    analysis_type = classify_query(query)
+
+
+
+
+    rag_response = call_integrated_rag(client_name, client_id, query)
+    
+    if rag_response and rag_response.get('success', False):
+        # Use RAG response
+        logger.info("Using integrated RAG response for analysis")
+        
+        # Extract data from RAG response
+        analysis_data = rag_response.get('analysis', {})
+        results_data = analysis_data.get('results', {})
+        
+        # Map RAG response to UI format
+        results = {
+            "metric1_label": "Debt-to-Income Ratio",
+            "metric1_value": results_data.get('debt_to_income_ratio', 'N/A'),
+            "metric2_label": "Financial Health",  
+            "metric2_value": results_data.get('financial_health', 'N/A'),
+            "analysis_title": results_data.get('analysis_title', f'RAG Analysis for {client_name}'),
+            "analysis_text": results_data.get('recommendation', 'Analysis from RAG system.')
+        }
+        evidence_data = analysis_data.get('evidence', {})
+        kg_insights = evidence_data.get('knowledge_graph_reasoning', [])
+        if isinstance(kg_insights, list):
+            kg_insights = kg_insights
+        else:
+            kg_insights = [str(kg_insights)]
+        
+        # Format vector docs
+        vector_docs_raw = evidence_data.get('supporting_documents', [])
+        vector_docs = []
+        if isinstance(vector_docs_raw, list):
+            for i, doc in enumerate(vector_docs_raw):
+                vector_docs.append({
+                    "source": f"RAG Document {i+1}",
+                    "text": str(doc)
+                })
+    
+    else:
+        results= get_fallback_analysis(client_data, analysis_type, query, client_name)
+        results = get_fallback_evidence(client_name, client_data)
+
     
     # Create metric HTML boxes
     metric1_html = create_metric_html(results['metric1_label'], results['metric1_value'])
@@ -870,8 +1083,6 @@ def analyze_client(client_name, query):
 
 {results['analysis_text']}"""
     
-    # Get evidence data (can also use RAG Lambda)
-    kg_insights, vector_docs = get_evidence_data(client_name, analysis_type)
     
     # Format evidence sections
     kg_html = format_kg_insights(kg_insights)
@@ -886,11 +1097,6 @@ def analyze_client(client_name, query):
         vector_html
     )
 
-def update_on_client_change(client_name):
-    """Update all fields when client changes"""
-    return analyze_client(client_name, "What is the risk assessment for a personal loan of Rs50,000?")
-
-# Custom CSS for styling
 custom_css = """
 .gradio-container {
     max-width: none !important;
@@ -982,8 +1188,28 @@ with gr.Blocks(css=custom_css, title="RM Intelligence Dashboard", theme=gr.theme
     def on_analyze_click(client_name, query):
         return analyze_client(client_name, query)
     
+    def get_blank_metric():
+        return create_metric_html("--", "N/A")
+    
+    def get_blank_analysis():
+        return "👆 Select options and click 'Analyze Client' to see results"
+    
+    def get_blank_evidence():
+        return "Evidence will be displayed after analysis"
+    
+    
+    
     def on_client_change(client_name):
-        return update_on_client_change(client_name)
+        summary = get_client_summary(client_name)
+        return (
+            summary, 
+            get_blank_metric(),
+            get_blank_metric(),
+            get_blank_analysis(),
+            get_blank_evidence(),
+            get_blank_evidence(),
+            ""
+        )
     
     # Wire up the events
     analyze_btn.click(
@@ -995,13 +1221,13 @@ with gr.Blocks(css=custom_css, title="RM Intelligence Dashboard", theme=gr.theme
     client_dropdown.change(
         fn=on_client_change,
         inputs=[client_dropdown],
-        outputs=[client_summary, metric1, metric2, analysis_results, kg_reasoning, vector_documents]
+        outputs=[client_summary, metric1, metric2, analysis_results, kg_reasoning, vector_documents, query_input]
     )
     
     # Load initial data when app starts
     demo.load(
-        fn=lambda: update_on_client_change(list(CLIENT_DATA.keys())[0] if CLIENT_DATA else ""),
-        outputs=[client_summary, metric1, metric2, analysis_results, kg_reasoning, vector_documents]
+        fn=lambda: on_client_change(list(CLIENT_DATA.keys())[0] if CLIENT_DATA else ""),
+        outputs=[client_summary, metric1, metric2, analysis_results, kg_reasoning, vector_documents, query_input]
     )
 
 if __name__ == "__main__":
