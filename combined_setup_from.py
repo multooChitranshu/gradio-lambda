@@ -356,7 +356,7 @@ def initialize_savings_rag_components():
                             "financial_health": "Assess the financial health.(Based on financial health choose from Poor,Fair,Good,Excellent)",
                             "analysis_title": "Provide a title for the analysis.",
                             "recommendation": "Offer a recommendation based on the analysis.",
-                            "savings_factors": "List key factors affecting savings."
+                            "key_factors": "List key factors affecting or improving savings."
                         }},
                         "evidence": {{
                             "knowledge_graph_reasoning": ["Provide top 3 reasoning based on the knowledge graph"],
@@ -508,7 +508,7 @@ def initialize_risk_rag_components():
                             "recommended_limit": "Assess the financial situation and suggest a recommended limit in Interger for the asked question. It can be loan or credit card limit",
                             "analysis_title": "Provide a title for the analysis.",
                             "recommendation": "Offer a recommendation based on the analysis.",
-                            "risk_factors": "List key factors affecting savings."
+                            "key_factors": "List key factors involving risk."
                         }},
                         "evidence": {{
                             "knowledge_graph_reasoning": ["Provide top 3 reasoning based on the knowledge graph"],
@@ -846,6 +846,18 @@ def extract_user_info_and_clean_query(full_query: str) -> tuple[str, str, str]:
     return None, None, full_query
 
 def extract_json_from_response(response_text):
+    try:
+        return json.loads(response_text)
+    except json.JSONDecodeError:
+        matches = re.findall(r'\{.*\}', response_text, re.DOTALL)
+        for match in matches:
+            try:
+                return json.loads(match)
+            except json.JSONDecodeError:
+                continue
+    return {"type":"UNKNOWN", "results":{}, "evidence":{}}
+
+
     # Matches the first { ... } block (non-recursive, so only works with top-level JSONs)
     matches = re.findall(r'\{.*\}', response_text, re.DOTALL)
 
@@ -938,7 +950,9 @@ def get_fallback_evidence(client_name, client_data):
     return kg_insights, vector_docs
 
 try:
-    initialize_rag_components()
+    initialize_classifier()
+    initialize_risk_rag_components()
+    initialize_savings_rag_components()
     logger.info("RAG components initialized successfully")
 except Exception as e:
     logger.warning(f"Failed to initialize RAG components: {e}")
@@ -1033,7 +1047,7 @@ def analyze_client(client_name, query):
 
 
 
-    rag_response = call_integrated_rag(client_name, client_id, query)
+    rag_response = call_integrated_rag(client_name, client_id, query, analysis_type)
     
     if rag_response and rag_response.get('success', False):
         # Use RAG response
@@ -1042,14 +1056,25 @@ def analyze_client(client_name, query):
         # Extract data from RAG response
         analysis_data = rag_response.get('analysis', {})
         results_data = analysis_data.get('results', {})
+
+        if analysis_type == "risk":
+            metric1_label = "Risk Score"
+            metric1_value = results_data.get('risk_score','N/A')
+            metric2_label = "Recommended Limit"
+            metric2_value = f"Rs. {results_data.get('recommended_limit', 'N/A')}"
+        else:
+            metric1_label = "Debt-to-Income Ratio"
+            metric1_value = results_data.get('debt_to_income_ratio', 'N/A')
+            metric2_label = "Financial Health"
+            metric2_value = results_data.get('financial_health', 'N/A')
         
         # Map RAG response to UI format
         results = {
-            "metric1_label": "Debt-to-Income Ratio",
-            "metric1_value": results_data.get('debt_to_income_ratio', 'N/A'),
-            "metric2_label": "Financial Health",  
-            "metric2_value": results_data.get('financial_health', 'N/A'),
-            "analysis_title": results_data.get('analysis_title', f'RAG Analysis for {client_name}'),
+            "metric1_label": metric1_label,
+            "metric1_value": metric1_value,
+            "metric2_label": metric2_label,  
+            "metric2_value": metric2_value,
+            "analysis_title": results_data.get('analysis_title', f'{analysis_type} Analysis for {client_name}'),
             "analysis_text": results_data.get('recommendation', 'Analysis from RAG system.')
         }
         evidence_data = analysis_data.get('evidence', {})
@@ -1081,7 +1106,9 @@ def analyze_client(client_name, query):
     # Format analysis results
     analysis_content = f"""## {results['analysis_title']}
 
-{results['analysis_text']}"""
+{results['analysis_text']}
+
+{results['key_factors']}"""
     
     
     # Format evidence sections
