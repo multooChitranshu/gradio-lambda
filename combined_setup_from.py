@@ -1265,3 +1265,11 @@ if __name__ == "__main__":
         share=False,
         show_error=True
     )
+
+
+# {
+#     "type": "SAVINGS",
+#     "results": {
+#         "debt_to_income_ratio": "25%",
+#         "financial_health": "Good",
+#         "analysis_title": "
