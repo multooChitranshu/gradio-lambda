@@ -357,7 +357,7 @@ def initialize_savings_rag_components():
                             "financial_health": "Assess the financial health.(Based on financial health choose from Poor,Fair,Good,Excellent)",
                             "analysis_title": "Provide a title for the analysis.",
                             "recommendation": "Offer a recommendation based on the analysis.",
-                            "key_factors": "List key factors affecting or improving savings."
+                            "key_factors": ["List 3-5 key savings factors as an array of strings, each approximately 15 words long"]
                         }},
                         "evidence": {{
                             "knowledge_graph_reasoning": ["Provide top 3 reasoning based on the knowledge graph"],
@@ -365,12 +365,13 @@ def initialize_savings_rag_components():
                         }}
                     }}
                     No matter, what your response should only be in the above json format, no additional text. If the answer is not available in the provided information, return an empty json.
+                    If the question is not a financial question then return an empty json.
                     Pay close attention to any user-specific identifiers (like user ID) and any 'Unstructured Data'
                     notes in the user profile, as these often contain critical insights.
 
                     Summarize her profile information and any relevant context to provide a comprehensive answer.
                     Do not make up information. Focus on providing relevant details from the context and user profile.
-            
+                    If the question is not a financial question then return an empty json.
                     User Profile from Knowledge Graph:
                     {user_profile_info}
                     """
@@ -505,11 +506,11 @@ def initialize_risk_rag_components():
                     {{
                         "type": "RISK",
                         "results": {{
-                            "risk_score": "Provide the risk score on the scale of 1 to 10. It should tell how risky is the query for the client.",
-                            "recommended_limit": "Assess the financial situation and suggest a recommended limit in Interger for the asked question. It can be loan or credit card limit",
+                            "risk_score": "Provide the risk score on the scale of 1 to 10. 1 being least risky and 10 being most risky. It should tell how risky is the query for the client.",
+                            "financial_resilience": "Rate the client's ability to withstand financial shocks based on emrgency funds, insurance etc as: Strong, Moderate, Limited, Vulnerable",
                             "analysis_title": "Provide a title for the analysis.",
                             "recommendation": "Offer a recommendation based on the analysis.",
-                            "key_factors": "List key factors involving risk."
+                            "key_factors": ["List 3-5 key risk factors as an array of strings, each approximately 15 words long"]
                         }},
                         "evidence": {{
                             "knowledge_graph_reasoning": ["Provide top 3 reasoning based on the knowledge graph"],
@@ -517,12 +518,13 @@ def initialize_risk_rag_components():
                         }}
                     }}
                     No matter, what your response should only be in the above json format, no additional text. If the answer is not available in the provided information, return an empty json.
+                    If the question is not a financial question then return an empty json.
                     Pay close attention to any user-specific identifiers (like user ID) and any 'Unstructured Data'
                     notes in the user profile, as these often contain critical insights.
 
                     Summarize her profile information and any relevant context to provide a comprehensive answer.
                     Do not make up information. Focus on providing relevant details from the context and user profile.
-            
+                    If the question is not a financial question then return an empty json.
                     User Profile from Knowledge Graph:
                     {user_profile_info}
                     """
@@ -1068,8 +1070,8 @@ def analyze_client(client_name, query):
         if analysis_type == "risk":
             metric1_label = "Risk Score"
             metric1_value = results_data.get('risk_score','N/A')
-            metric2_label = "Recommended Limit"
-            metric2_value = f"Rs. {results_data.get('recommended_limit', 'N/A')}"
+            metric2_label = "Financial Resilience"
+            metric2_value = f"{results_data.get('financial_resilience', 'N/A')}"
         else:
             actual_dti=calculate_debt_to_income(client_data)
             metric1_label = "Debt-to-Income Ratio"
@@ -1113,12 +1115,20 @@ def analyze_client(client_name, query):
     metric1_html = create_metric_html(results['metric1_label'], results['metric1_value'])
     metric2_html = create_metric_html(results['metric2_label'], results['metric2_value'])
     
+    if 'key_factors' in results:
+        key_factors = results['key_factors']
+        if isinstance(key_factors, list):
+            formatted_factors = "\n\n**Key Factors:**\n"+"\n".join([f"- {factor}" for factor in key_factors])
+        else:
+            formatted_factors = f"\n\n**Key Factors:**\n- {key_factors}"
+    else :
+        formatted_factors =""
     # Format analysis results
     analysis_content = f"""## {results['analysis_title']}
 
 {results['analysis_text']}
 
-{results['key_factors']}"""
+{formatted_factors}"""
     
     
     # Format evidence sections
